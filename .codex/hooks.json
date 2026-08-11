@@ -1,0 +1,34 @@
+{
+  "description": "Recover durable task checkpoints around Codex context compaction.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|compact)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File \".agents/skills/preserve-task-memory/scripts/memory.ps1\" hook",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \".agents\\skills\\preserve-task-memory\\scripts\\memory.ps1\" hook",
+            "statusMessage": "Recovering durable task memory",
+            "additionalContextLimit": 1800,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "^(manual|auto)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File \".agents/skills/preserve-task-memory/scripts/memory.ps1\" hook",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \".agents\\skills\\preserve-task-memory\\scripts\\memory.ps1\" hook",
+            "statusMessage": "Checking durable task memory",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

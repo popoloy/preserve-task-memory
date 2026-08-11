@@ -1,0 +1,4 @@
+interface:
+  display_name: "Preserve Task Memory"
+  short_description: "Keep long-running Codex task state durable"
+  default_prompt: "Use $preserve-task-memory to checkpoint and recover this long-running task."
