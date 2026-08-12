@@ -2,7 +2,7 @@
 
 A repository-scoped Codex skill and lifecycle hook that preserves critical state for long-running tasks across context compaction.
 
-It stores concise checkpoints outside the conversation, keyed by Codex session id, and restores the latest capsule after startup, resume, or compaction. No external model API or database is required.
+It automatically initializes concise checkpoints outside the conversation, keyed by Codex session id, and restores the latest capsule after startup, resume, or compaction. No external model API or database is required.
 
 ## What It Preserves
 
@@ -20,7 +20,8 @@ Runtime state is stored under `.codex/task-memory/` and excluded from Git.
 .agents/skills/preserve-task-memory/
   SKILL.md
   agents/openai.yaml
-  scripts/memory.ps1
+  scripts/memory.mjs
+  scripts/hook-runner.cjs
 .codex/hooks.json
 ```
 
@@ -28,37 +29,43 @@ Runtime state is stored under `.codex/task-memory/` and excluded from Git.
 
 1. Clone the repository and start Codex from its root directory.
 2. Open `/hooks` and review and trust the project hooks.
-3. Invoke `$preserve-task-memory` explicitly, or let Codex select it for a long-running task.
+3. Continue working normally. Hooks initialize state, save sanitized user prompts, and record mechanical tool activity automatically.
+4. Invoke `$preserve-task-memory` explicitly, or let Codex select it, when semantic decisions and milestones need consolidation.
 
-The hook supplies the current session id. Initialize a checkpoint with:
+Manual initialization is optional. Use it to set an explicit objective or definition of done:
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".agents/skills/preserve-task-memory/scripts/memory.ps1" init `
-  -SessionId "<session-id>" `
-  -Objective "<objective>" `
-  -DoneCriteria "<definition of done>"
+```shell
+node ".agents/skills/preserve-task-memory/scripts/memory.mjs" init \
+  --session-id "<session-id>" \
+  --objective "<objective>" \
+  --done-criteria "<definition of done>"
 ```
 
 Record a meaningful milestone with:
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".agents/skills/preserve-task-memory/scripts/memory.ps1" checkpoint `
-  -SessionId "<session-id>" `
-  -Current "<current phase>" `
-  -Completed "<completed item>" `
-  -Next "<next action>" `
-  -Evidence "<verification>" `
-  -Status active
+```shell
+node ".agents/skills/preserve-task-memory/scripts/memory.mjs" checkpoint \
+  --session-id "<session-id>" \
+  --current "<current phase>" \
+  --completed "<completed item>" \
+  --next "<next action>" \
+  --evidence "<verification>" \
+  --status active
 ```
 
 Other actions are `show`, `list`, and `validate`. Run the script without an action for command help.
 
 ## Behavior
 
-- `SessionStart` injects the latest compact capsule on startup, resume, and post-compaction continuation.
-- `PreCompact` records the compaction event and warns when the checkpoint is stale.
+- `SessionStart` creates missing state and injects the latest capsule on startup, resume, and post-compaction continuation.
+- `UserPromptSubmit` saves a sanitized, bounded copy of each user request and adopts the first request as the provisional objective.
+- `PostToolUse` records bounded mechanical activity and explicit file fields without storing shell commands or full tool output.
+- `PreCompact` writes a deterministic recovery checkpoint before compaction.
 - Capsules are capped at 6,000 characters to limit context use.
 - Common credential patterns are redacted before storage.
+- State writes are atomic and guarded by a per-session lock.
 - Stored memory is recovery guidance and should be checked against the current workspace.
 
-The current implementation targets Windows PowerShell for hook execution. The hook configuration also includes a `pwsh` command for compatible environments.
+Automatic capture deliberately does not infer decision rationale, completion, or test success from tool output. Codex still writes semantic checkpoints for those facts, but forgetting one no longer leaves the session without its recent requests and mechanical activity.
+
+The core is a dependency-free Node.js ES module and uses only cross-platform standard-library APIs. The same hook configuration runs on Windows, Linux, and macOS when `node` is available on `PATH`.
