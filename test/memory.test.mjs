@@ -111,7 +111,49 @@ test("version 1 PowerShell state with BOM migrates without losing semantics", (t
   fs.writeFileSync(path.join(directory, "state.json"), `\uFEFF${JSON.stringify(legacy)}`, "utf8");
   run(["checkpoint", "--root", root, "--session-id", "legacy", "--current", "Migrated"]);
   const migrated = JSON.parse(fs.readFileSync(path.join(directory, "state.json"), "utf8"));
-  assert.equal(migrated.schema_version, 2);
+  assert.equal(migrated.schema_version, 3);
   assert.deepEqual(migrated.decisions, ["Existing decision"]);
   assert.equal(migrated.checkpoint_count, 3);
+});
+
+test("Stop hook writes a bounded final semantic summary", (t) => {
+  const root = temporaryRoot(t);
+  const session = "stop-session";
+  hook(root, { hook_event_name: "SessionStart", session_id: session, cwd: root, source: "startup" });
+  const result = JSON.parse(hook(root, {
+    hook_event_name: "Stop", session_id: session, turn_id: "turn-1", cwd: root,
+    last_assistant_message: "Implemented the change and verified node --test passed.",
+  }));
+  assert.equal(result.continue, true);
+  const state = JSON.parse(fs.readFileSync(statePath(root, session), "utf8"));
+  assert.equal(state.schema_version, 3);
+  assert.match(state.final_turn_summary, /node --test passed/);
+  assert.equal(state.semantic_checkpoint_needed, false);
+  assert.equal(state.entries.find((entry) => entry.kind === "summary").source, "stop-hook");
+});
+
+test("checkpoint priorities and lifecycle merge keep only the current topic active", (t) => {
+  const root = temporaryRoot(t);
+  const session = "governance-session";
+  run(["init", "--root", root, "--session-id", session, "--objective", "Govern memory"]);
+  run(["checkpoint", "--root", root, "--session-id", session, "--decision", "Use local index", "--topic", "storage", "--priority", "high"]);
+  run(["checkpoint", "--root", root, "--session-id", session, "--decision", "Use JSONL index", "--topic", "storage", "--merge", "--priority", "critical"]);
+  let state = JSON.parse(fs.readFileSync(statePath(root, session), "utf8"));
+  assert.equal(state.entries.filter((entry) => entry.kind === "decision" && entry.lifecycle === "active").length, 1);
+  assert.equal(state.entries.find((entry) => entry.text === "Use JSONL index").priority, "critical");
+  run(["lifecycle", "--root", root, "--session-id", session, "--topic", "storage", "--kind", "decision", "--lifecycle", "stale"]);
+  state = JSON.parse(fs.readFileSync(statePath(root, session), "utf8"));
+  assert.equal(state.entries.filter((entry) => entry.kind === "decision" && entry.lifecycle === "active").length, 0);
+});
+
+test("profile and BM25 search are local and optional", (t) => {
+  const root = temporaryRoot(t);
+  const session = "search-session";
+  run(["init", "--root", root, "--session-id", session, "--objective", "Improve repository memory"]);
+  run(["checkpoint", "--root", root, "--session-id", session, "--decision", "Use a deterministic local index", "--topic", "search"]);
+  const profile = run(["profile", "--root", root]);
+  assert.match(profile, /Lightweight Project Profile/);
+  const results = JSON.parse(run(["search", "--root", root, "--query", "deterministic local index", "--mode", "bm25"]));
+  assert.equal(results[0].kind, "decision");
+  assert.match(results[0].text, /deterministic local index/);
 });
