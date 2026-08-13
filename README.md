@@ -41,7 +41,7 @@ node ".agents/skills/preserve-task-memory/scripts/memory.mjs" init \
   --done-criteria "<完成定义>"
 ```
 
-记录一个有意义的里程碑：
+记录一个有意义的关键事件：
 
 ```shell
 node ".agents/skills/preserve-task-memory/scripts/memory.mjs" checkpoint \
