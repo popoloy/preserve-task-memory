@@ -1,10 +1,11 @@
 {
   "name": "preserve-task-memory",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "install:global": "node .agents/skills/preserve-task-memory/scripts/install-global.mjs install"
   },
   "engines": {
     "node": ">=18"

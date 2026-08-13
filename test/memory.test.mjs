@@ -7,6 +7,7 @@ import test from "node:test";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const memoryScript = path.join(repositoryRoot, ".agents", "skills", "preserve-task-memory", "scripts", "memory.mjs");
+const installerScript = path.join(repositoryRoot, ".agents", "skills", "preserve-task-memory", "scripts", "install-global.mjs");
 
 function temporaryRoot(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "preserve-task-memory-test-"));
@@ -16,9 +17,17 @@ function temporaryRoot(t) {
 
 function run(args, options = {}) {
   const result = spawnSync(process.execPath, [memoryScript, ...args], {
-    cwd: repositoryRoot,
+    cwd: options.cwd ?? repositoryRoot,
     encoding: "utf8",
     input: options.input,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+function runScript(script, args, options = {}) {
+  const result = spawnSync(process.execPath, [script, ...args], {
+    cwd: options.cwd ?? repositoryRoot, encoding: "utf8", input: options.input,
   });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim();
@@ -156,4 +165,50 @@ test("profile and BM25 search are local and optional", (t) => {
   const results = JSON.parse(run(["search", "--root", root, "--query", "deterministic local index", "--mode", "bm25"]));
   assert.equal(results[0].kind, "decision");
   assert.match(results[0].text, /deterministic local index/);
+});
+
+test("global runtime resolves the Git root and respects repository opt-out", (t) => {
+  const root = temporaryRoot(t);
+  const git = spawnSync("git", ["init", "--quiet", root], { encoding: "utf8" });
+  assert.equal(git.status, 0, git.stderr);
+  const nested = path.join(root, "src", "nested");
+  fs.mkdirSync(nested, { recursive: true });
+  run(["hook"], {
+    cwd: nested,
+    input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "global-session", cwd: nested, source: "startup" }),
+  });
+  assert.equal(fs.existsSync(statePath(root, "global-session")), true);
+
+  fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".codex", "task-memory.json"), '{"enabled":false}\n', "utf8");
+  run(["hook"], {
+    cwd: nested,
+    input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "disabled-session", cwd: nested, source: "startup" }),
+  });
+  assert.equal(fs.existsSync(statePath(root, "disabled-session")), false);
+});
+
+test("global installer is idempotent and preserves unrelated hooks", (t) => {
+  const root = temporaryRoot(t);
+  const hooksPath = path.join(root, "hooks.json");
+  fs.writeFileSync(hooksPath, JSON.stringify({ hooks: {
+    Stop: [{ hooks: [{ type: "command", command: "node unrelated.cjs" }] }],
+  } }), "utf8");
+  runScript(installerScript, ["install", "--codex-home", root]);
+  runScript(installerScript, ["install", "--codex-home", root]);
+  const hooks = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
+  assert.equal(hooks.hooks.Stop.filter((group) => group.hooks[0].command.includes("preserve-task-memory")).length, 1);
+  assert.equal(hooks.hooks.Stop.some((group) => group.hooks[0].command === "node unrelated.cjs"), true);
+  const installedSkill = path.join(root, "skills", "preserve-task-memory");
+  assert.equal(fs.existsSync(path.join(installedSkill, "SKILL.md")), true);
+
+  const repository = path.join(root, "repository");
+  fs.mkdirSync(repository);
+  const git = spawnSync("git", ["init", "--quiet", repository], { encoding: "utf8" });
+  assert.equal(git.status, 0, git.stderr);
+  runScript(path.join(installedSkill, "scripts", "hook-runner.cjs"), [], {
+    cwd: repository,
+    input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "installed-session", cwd: repository, source: "startup" }),
+  });
+  assert.equal(fs.existsSync(statePath(repository, "installed-session")), true);
 });

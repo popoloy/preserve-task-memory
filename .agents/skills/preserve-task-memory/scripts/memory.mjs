@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 const SCHEMA_VERSION = 3;
 const CAPSULE_LIMIT = 6000;
@@ -31,17 +32,29 @@ function parseArgs(argv) {
   return result;
 }
 
-function findWorkspaceRoot(startPath) {
+function findRepositoryRoot(startPath) {
   let current = path.resolve(startPath);
+  if (!fs.existsSync(current)) return null;
   if (!fs.statSync(current).isDirectory()) current = path.dirname(current);
+  const git = spawnSync("git", ["-C", current, "rev-parse", "--show-toplevel"], {
+    encoding: "utf8", windowsHide: true,
+  });
+  if (git.status === 0 && git.stdout.trim()) return path.resolve(git.stdout.trim());
   while (true) {
-    const marker = path.join(current, ".agents", "skills", "preserve-task-memory", "SKILL.md");
-    if (fs.existsSync(marker)) return current;
+    if (fs.existsSync(path.join(current, ".git"))) return current;
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
   }
-  throw new Error(`Could not locate preserve-task-memory above '${startPath}'.`);
+  return null;
+}
+
+function readRepositoryConfig(root) {
+  const configPath = path.join(root, ".codex", "task-memory.json");
+  if (!fs.existsSync(configPath)) return { enabled: true };
+  const config = readState(configPath);
+  if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error(`${configPath} must contain a JSON object.`);
+  return { enabled: config.enabled !== false };
 }
 
 function safeSessionId(value) {
@@ -428,14 +441,18 @@ function readHookInput() {
 
 function rootAndPaths(values, hookInput = null) {
   const start = values.root ?? hookInput?.cwd ?? process.cwd();
-  const root = values.root ? path.resolve(values.root) : findWorkspaceRoot(start);
+  const root = values.root ? path.resolve(values.root) : findRepositoryRoot(start);
+  if (!root) return null;
+  if (!values.root && !readRepositoryConfig(root).enabled) return null;
   const sessionId = values.session_id ?? hookInput?.session_id;
   return { root, paths: pathsFor(root, sessionId), sessionId };
 }
 
 function handleHook(input, values) {
   if (!input?.session_id) return;
-  const { paths, sessionId } = rootAndPaths(values, input);
+  const resolved = rootAndPaths(values, input);
+  if (!resolved) return;
+  const { paths, sessionId } = resolved;
   withLock(paths, () => {
     const event = input.hook_event_name;
     if (event === "SessionStart") {
@@ -604,7 +621,8 @@ function run() {
   if (action === "hook") return handleHook(readHookInput(), values);
   if (action === "help") return process.stdout.write(`${help()}\n`);
 
-  const root = values.root ? path.resolve(values.root) : findWorkspaceRoot(process.cwd());
+  const root = values.root ? path.resolve(values.root) : findRepositoryRoot(process.cwd());
+  if (!root) throw new Error("Task memory requires a Git working tree or an explicit --root.");
 
   if (action === "search") {
     return process.stdout.write(`${JSON.stringify(searchMemory(root, values), null, 2)}\n`);
@@ -633,7 +651,9 @@ function run() {
     return process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
   }
 
-  const { paths, sessionId } = rootAndPaths(values);
+  const resolved = rootAndPaths(values);
+  if (!resolved) throw new Error("Task memory is disabled for this repository.");
+  const { paths, sessionId } = resolved;
   return withLock(paths, () => {
     if (action === "init") {
       const existing = migrateState(readState(paths.state));
