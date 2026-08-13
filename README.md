@@ -2,15 +2,16 @@
 
 一个仓库级的 Codex skill 与生命周期钩子，用于在上下文压缩（context compaction）期间保持长时间运行任务的关键状态。
 
-它会自动在会话之外初始化简洁的检查点（checkpoint），以 Codex 会话 id 为键，并在启动、恢复或压缩后自动恢复最新状态摘要（capsule）。不依赖任何外部模型 API 或数据库。
+它会自动在会话之外初始化简洁的检查点（checkpoint），以 Codex 会话 id 为键，并在启动、恢复或压缩后自动恢复最新状态摘要（capsule）。不依赖任何外部模型 API 或数据库。核心是一个零依赖的 Node.js ES 模块，仅使用跨平台的标准库 API；只要 `PATH` 中可用 `node`，即可在 Windows、Linux 和 macOS 上运行。
 
 ## 它保存了什么
 
 - 目标（Objective）与完成定义（Definition of Done）
-- 用户约束与技术决策
+- 用户约束与技术决策（支持优先级与生命周期管理）
 - 已完成的工作与验证证据
 - 当前状态、阻塞项与下一步动作
 - 相关文件路径
+- 最近一轮的收尾摘要（由 `Stop` 钩子自动记录）
 
 运行时状态存储在 `.codex/task-memory/` 下，且已从 Git 中排除。
 
@@ -24,6 +25,10 @@
   scripts/hook-runner.cjs
 .codex/hooks.json
 ```
+
+运行时还会在 `.codex/task-memory/` 下自动生成：
+- `sessions/<session-id>/` — 每个会话的状态（`state.json`、`capsule.md`、`events.jsonl`）
+- `project-profile.json` — 轻量项目档案（自动检测技术栈、脚本命令、关键路径）
 
 ## 使用方法
 
@@ -53,14 +58,36 @@ node ".agents/skills/preserve-task-memory/scripts/memory.mjs" checkpoint \
   --status active
 ```
 
-其他动作包括 `show`、`list` 和 `validate`。不带动作直接运行脚本可查看命令帮助。
+检查点条目支持优先级、主题与生命周期管理：
+
+```shell
+# 标记优先级 / 归属主题 / 同一主题新决策自动取代旧决策
+node ".agents/skills/preserve-task-memory/scripts/memory.mjs" checkpoint \
+  --session-id "<会话 id>" --decision "<新决策>" \
+  --topic "<主题>" --priority critical --merge
+
+# 将某主题下的旧条目标记为已过时/已解决
+node ".agents/skills/preserve-task-memory/scripts/memory.mjs" lifecycle \
+  --session-id "<会话 id>" --topic "<主题>" --lifecycle resolved
+```
+
+其他动作：
+- `show` — 打印当前记忆摘要
+- `list` — 列出工作区内的所有会话
+- `validate` — 校验状态与摘要大小
+- `profile` — 查看、刷新或更新项目档案（`--refresh` / `--technology` / `--key-path` / `--fact`）
+- `search` — 本地检索记忆：`--query` 必填，`--mode bm25`（默认，带优先级加权）或 `--mode text`（子串匹配），支持 `--session-id` / `--kind` / `--include-inactive` / `--limit`
+
+不带动作直接运行脚本可查看命令帮助。
 
 ## 行为说明
 
-- `SessionStart`：在启动、恢复以及压缩后续跑时，创建缺失的状态并注入最新的状态摘要。
+- `SessionStart`：在启动、恢复以及压缩后续跑时，创建缺失的状态并注入最新项目档案与状态摘要。
 - `UserPromptSubmit`：保存每条用户请求的一份脱敏、有界副本，并将第一条请求采纳为临时目标。
 - `PostToolUse`：记录有界的机械性活动与显式文件字段，不存储 shell 命令或完整的工具输出。
 - `PreCompact`：在压缩前写入一个确定性的恢复检查点。
+- `Stop`：会话结束时，把最后一条助手消息记为高优先级收尾摘要；它**不会**推断任务完成，完成仍需显式 `--status complete`。
+- 条目化存储：每条记录带 `priority`（critical/high/normal/low）与 `lifecycle`（active/superseded/resolved/stale/expired），可按主题归并、按优先级排序展示。
 - 状态摘要上限为 6,000 字符，以限制上下文占用。
 - 常见凭据模式在存储前会被打码（redact）。
 - 状态写入是原子的，并由每个会话独立的锁保护。
@@ -68,4 +95,4 @@ node ".agents/skills/preserve-task-memory/scripts/memory.mjs" checkpoint \
 
 自动捕获刻意**不会**从工具输出推断决策理由、完成状态或测试是否成功。这些事实仍由 Codex 通过语义检查点来记录；但即使遗漏了某个语义检查点，会话最近的请求与机械性活动也不会丢失。
 
-核心是一个零依赖的 Node.js ES 模块，仅使用跨平台的标准库 API。只要 `PATH` 中可用 `node`，同一套钩子配置即可在 Windows、Linux 和 macOS 上运行。
+`search` 与 `profile` 均完全本地运行，不依赖外部检索服务或嵌入（embedding）API；摘要截断后仍可通过 `search` 找回历史信息。
